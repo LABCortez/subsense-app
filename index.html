@@ -214,6 +214,7 @@
   <div class="receipt" id="receiptList"></div>
 
   <button class="mirror-btn" onclick="openMirror()">Generate my Money Mirror →</button>
+  <button class="mirror-btn" style="margin-top:10px;" onclick="exportCSV()">Export as CSV ↓</button>
 
   <footer>Your data stays on this device. Nothing is uploaded anywhere.</footer>
 </div>
@@ -267,7 +268,7 @@
 <div class="overlay" id="paywallOverlay">
   <div class="modal paywall">
     <h3>You've hit the free limit</h3>
-    <p style="font-size:14px; color:rgba(22,48,44,0.7); margin-top:-8px;">Free tracks up to 5 subscriptions. Unlock everything, once, forever.</p>
+    <p style="font-size:14px; color:rgba(22,48,44,0.7); margin-top:-8px;">Free tracks up to 3 subscriptions. Unlock everything, once, forever.</p>
     <div class="price-tag">€4.99 <span style="font-size:13px; font-weight:400; opacity:0.6;">one‑time</span></div>
     <ul>
       <li>Unlimited subscriptions</li>
@@ -277,7 +278,15 @@
     </ul>
     <div class="modal-actions">
       <button class="btn ghost" onclick="closePaywall()">Not now</button>
-      <a class="btn primary" style="text-decoration:none; text-align:center; display:flex; align-items:center; justify-content:center;" href="PASTE_YOUR_STRIPE_PAYMENT_LINK_HERE" id="payLink">Unlock</a>
+      <a class="btn primary" style="text-decoration:none; text-align:center; display:flex; align-items:center; justify-content:center;" href="PASTE_YOUR_LEMONSQUEEZY_PAYMENT_LINK_HERE" id="payLink" target="_blank" rel="noopener">Buy — €4.99</a>
+    </div>
+    <div style="margin-top:18px; padding-top:16px; border-top:1px solid var(--line);">
+      <label style="display:block; font-size:12px; color:rgba(22,48,44,0.6); margin-bottom:6px;">Already paid? Enter the code from your email</label>
+      <div style="display:flex; gap:8px;">
+        <input id="licenseInput" placeholder="XXXXXX-XXXXXX-XXXXXX" style="flex:1; padding:11px 12px; border-radius:10px; border:1px solid var(--line); font-family:'IBM Plex Mono',monospace; font-size:13px;">
+        <button class="btn primary" style="flex:none; padding:11px 18px;" onclick="validateLicense()">Unlock</button>
+      </div>
+      <div id="licenseMsg" style="font-size:12px; margin-top:8px; min-height:16px;"></div>
     </div>
   </div>
 </div>
@@ -289,19 +298,13 @@
 /* ---------- storage ---------- */
 const KEY = 'subsense_subs_v1';
 const PKEY = 'subsense_premium_v1';
+const FREE_LIMIT = 3;
 let subs = JSON.parse(localStorage.getItem(KEY) || '[]');
 let premium = localStorage.getItem(PKEY) === '1';
 
-/* unlock via redirect from payment link: ?unlocked=1 */
-(function checkUnlock(){
-  const params = new URLSearchParams(window.location.search);
-  if(params.get('unlocked') === '1'){
-    premium = true;
-    localStorage.setItem(PKEY, '1');
-    window.history.replaceState({}, '', window.location.pathname);
-    showToast('Unlocked — thank you! Everything is open now.');
-  }
-})();
+/* premium is unlocked ONLY by a validated license key (see validateLicense below).
+   A URL parameter is never trusted for this — anyone could type it in and get
+   premium for free, which defeats the point of charging for it. */
 
 function save(){ localStorage.setItem(KEY, JSON.stringify(subs)); render(); }
 
@@ -378,7 +381,7 @@ function escapeHtml(str){ return str.replace(/[&<>"']/g, m => ({'&':'&amp;','<':
 
 /* ---------- add / delete ---------- */
 function openAddModal(){
-  if(subs.length >= 5 && !premium){ openPaywall(); return; }
+  if(subs.length >= FREE_LIMIT && !premium){ openPaywall(); return; }
   document.getElementById('fName').value='';
   document.getElementById('fAmount').value='';
   document.getElementById('fDate').value='';
@@ -407,6 +410,65 @@ function deleteSub(id){
 function openPaywall(){ document.getElementById('paywallOverlay').classList.add('show'); }
 function closePaywall(){ document.getElementById('paywallOverlay').classList.remove('show'); }
 
+/* ---------- license validation (no server needed) ----------
+   Lemon Squeezy exposes a public endpoint that checks whether a license
+   key is real and paid for. We ask Lemon Squeezy directly from the
+   browser — nothing to host, nothing to maintain. */
+const LICENSE_KEY_STORAGE = 'subsense_license_key';
+
+async function validateLicense(){
+  const input = document.getElementById('licenseInput');
+  const msg = document.getElementById('licenseMsg');
+  const key = input.value.trim();
+  if(!key){ msg.textContent = 'Paste the code from your confirmation email.'; msg.style.color = 'var(--brick)'; return; }
+
+  msg.textContent = 'Checking…'; msg.style.color = 'rgba(22,48,44,0.6)';
+
+  try {
+    const res = await fetch('https://api.lemonsqueezy.com/v1/licenses/validate', {
+      method: 'POST',
+      headers: { 'Accept': 'application/json', 'Content-Type': 'application/x-www-form-urlencoded' },
+      body: 'license_key=' + encodeURIComponent(key)
+    });
+    const data = await res.json();
+
+    if(data.valid){
+      premium = true;
+      localStorage.setItem(PKEY, '1');
+      localStorage.setItem(LICENSE_KEY_STORAGE, key);
+      msg.textContent = '';
+      closePaywall();
+      showToast('Unlocked — thank you for supporting SubSense!');
+      render();
+    } else {
+      msg.textContent = 'That code isn\'t recognized. Check for typos, or contact support if you just paid.';
+      msg.style.color = 'var(--brick)';
+    }
+  } catch(err){
+    msg.textContent = 'Could not reach the license server. Check your connection and try again.';
+    msg.style.color = 'var(--brick)';
+  }
+}
+
+/* Re-check a stored license silently on load, in case it was refunded/revoked. */
+(async function recheckStoredLicense(){
+  const stored = localStorage.getItem(LICENSE_KEY_STORAGE);
+  if(!stored) return;
+  try {
+    const res = await fetch('https://api.lemonsqueezy.com/v1/licenses/validate', {
+      method: 'POST',
+      headers: { 'Accept': 'application/json', 'Content-Type': 'application/x-www-form-urlencoded' },
+      body: 'license_key=' + encodeURIComponent(stored)
+    });
+    const data = await res.json();
+    if(!data.valid){
+      premium = false;
+      localStorage.removeItem(PKEY);
+      localStorage.removeItem(LICENSE_KEY_STORAGE);
+    }
+  } catch(err){ /* offline: keep whatever we last knew locally */ }
+})();
+
 /* ---------- money mirror share card ---------- */
 function openMirror(){
   const canvas = document.getElementById('mirrorCanvas');
@@ -428,18 +490,40 @@ function openMirror(){
   ctx.fillStyle = 'rgba(231,237,228,0.75)';
   ctx.fillText('per month across ' + subs.length + ' subscriptions', 80, 380);
 
-  ctx.font = '400 30px Work Sans, sans-serif';
-  ctx.fillStyle = 'rgba(231,237,228,0.6)';
-  wrapText(ctx, '= €' + (total*12).toFixed(0) + ' this year. Know your number before it renews.', 80, 460, 900, 42);
+  if(premium){
+    // Full breakdown: yearly total + top spending category
+    ctx.font = '400 30px Work Sans, sans-serif';
+    ctx.fillStyle = 'rgba(231,237,228,0.6)';
+    wrapText(ctx, '= €' + (total*12).toFixed(0) + ' this year. Know your number before it renews.', 80, 460, 900, 42);
 
-  if(!premium){
-    ctx.font = '400 26px Work Sans, sans-serif';
-    ctx.fillStyle = 'rgba(231,237,228,0.45)';
-    ctx.fillText('Made with SubSense — free to try', 80, 980);
-  } else {
+    const byCategory = {};
+    subs.forEach(s => { byCategory[s.category] = (byCategory[s.category]||0) + monthlyOf(s); });
+    const catNames = {'🎬':'Streaming','💪':'Fitness','🛠️':'Software','📰':'News','🎮':'Gaming','✨':'Other'};
+    const topCat = Object.entries(byCategory).sort((a,b)=>b[1]-a[1])[0];
+
+    if(topCat){
+      ctx.fillStyle = 'rgba(201,138,43,0.15)';
+      ctx.fillRect(80, 560, 920, 130);
+      ctx.font = '500 24px Work Sans, sans-serif';
+      ctx.fillStyle = 'rgba(231,237,228,0.85)';
+      ctx.fillText('BIGGEST CATEGORY', 110, 605);
+      ctx.font = '500 44px "IBM Plex Mono", monospace';
+      ctx.fillStyle = '#E7EDE4';
+      ctx.fillText(topCat[0] + '  ' + (catNames[topCat[0]]||'Other') + '  €' + topCat[1].toFixed(2) + '/mo', 110, 660);
+    }
+
     ctx.font = '400 26px Work Sans, sans-serif';
     ctx.fillStyle = 'rgba(231,237,228,0.55)';
     ctx.fillText('Made with SubSense', 80, 980);
+  } else {
+    // Free tier: total only, with a soft nudge instead of the full breakdown
+    ctx.font = '400 28px Work Sans, sans-serif';
+    ctx.fillStyle = 'rgba(231,237,228,0.45)';
+    wrapText(ctx, 'Unlock the full Money Mirror — yearly total + your biggest category — for €4.99 once.', 80, 460, 880, 40);
+
+    ctx.font = '400 26px Work Sans, sans-serif';
+    ctx.fillStyle = 'rgba(231,237,228,0.4)';
+    ctx.fillText('Made with SubSense — free to try', 80, 980);
   }
 
   const link = document.createElement('a');
@@ -458,6 +542,29 @@ function wrapText(ctx, text, x, y, maxWidth, lineHeight){
     } else { line = test; }
   }
   ctx.fillText(line, x, y);
+}
+
+/* ---------- CSV export (premium only) ---------- */
+function exportCSV(){
+  if(!premium){ openPaywall(); return; }
+  if(subs.length === 0){ showToast('Add a subscription first.'); return; }
+
+  const header = ['Name','Amount','Currency','Cycle','Monthly equivalent','Next renewal','Category'];
+  const rows = subs.map(s => [
+    s.name, s.amount.toFixed(2), 'EUR', s.cycle, monthlyOf(s).toFixed(2), s.nextRenewal || '', s.category
+  ]);
+  const csvLines = [header, ...rows].map(row =>
+    row.map(cell => '"' + String(cell).replace(/"/g,'""') + '"').join(',')
+  );
+  const csv = csvLines.join('\r\n');
+
+  const blob = new Blob([csv], { type: 'text/csv;charset=utf-8;' });
+  const link = document.createElement('a');
+  link.href = URL.createObjectURL(blob);
+  link.download = 'subsense-export.csv';
+  link.click();
+  URL.revokeObjectURL(link.href);
+  showToast('CSV downloaded.');
 }
 
 /* ---------- pwa ---------- */
